@@ -13,14 +13,13 @@ use std::io::{BufWriter, Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 use rand::{rng, Rng};
-use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 
 static CURR_STEP: RwLock<SrsSteps> = RwLock::new(SrsSteps::Idle);
 static ERROR: RwLock<String> = RwLock::new(String::new());
 static SRS_RESULT: LazyLock<RwLock<SRSResult>> = LazyLock::new(|| RwLock::new(SRSResult::default()));
 
-#[derive(Encode, Decode, Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct SRSResult {
     sha256_original: String,
     attestation: String,
@@ -116,6 +115,10 @@ async fn run_srs_utils(sha_srs: String, srs_path: &PathBuf, proof_path: &PathBuf
         stdin.write_all(random_string.as_bytes())?;
     }
 
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all("Y".as_bytes())?;
+    }
+
     let result = child.wait()?;
     if !result.success() {
         return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("SRS Utils command failed with status: {}", result))));
@@ -205,7 +208,7 @@ fn dump_srs_result_to_file(srs_res: SRSResult) -> Result<(), Box<dyn std::error:
     let mut result = SRS_RESULT.write();
     *result = srs_res.clone();
     drop(result);
-    let serialized_srs = bincode::encode_to_vec(&srs_res, bincode::config::standard())?;
+    let serialized_srs = bincode::serialize(&srs_res)?;
     std::fs::write("srs_result.bin", serialized_srs)?;
     Ok(())
 }
@@ -243,6 +246,7 @@ async fn calculate() -> impl Responder {
         *step = SrsSteps::DownloadPowerOfTau;
         drop(step); // Release the lock before spawning
         tokio::spawn(async move {
+            println!("Starting download of Power of Tau...");
             let sha256;
             match download_power_of_tau().await {
                 Ok(sha) => {
@@ -344,7 +348,7 @@ async fn main() -> std::io::Result<()> {
             .service(Files::new("/artifacts", "./artifacts").show_files_listing())
     })
     .workers(8)
-    .bind(("0.0.0.0", 8080))?
+    .bind(("127.0.0.1", 8080))?
     .run()
     .await
 }
@@ -355,7 +359,7 @@ fn init_srv() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     if let Ok(_metadata) = std::fs::metadata("srs_result.bin") {
         let serialized_srs = std::fs::read("srs_result.bin")?;
-        let (srs_res, _): (SRSResult, usize) = bincode::decode_from_slice(&serialized_srs, bincode::config::standard())?;
+        let srs_res: SRSResult = bincode::deserialize(&serialized_srs)?;
         *SRS_RESULT.write() = srs_res;
         *CURR_STEP.write() = SrsSteps::Done;
         println!("Restored SRS results. Setting current step to Done, preventing further calculations.");
