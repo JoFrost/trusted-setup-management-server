@@ -9,6 +9,7 @@ Restart=always
 User=root
 Group=root
 RestartSec=1
+StandardInput=null
 
 [Install]
 WantedBy=multi-user.target
